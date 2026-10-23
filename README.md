@@ -22,10 +22,12 @@ python -m bci.data --data-dir data  # download PROTEUS (~1.5 GB), write data/pro
 
 Published baselines (`session_mean`, chance = 0.333): EEGNet 0.326, CTNet 0.350, REVE 0.360.
 
-## Other notebooks
+## Extras
+
+Older side notebooks, not part of Track 2.
 
 | Notebook | Topic |
 |---|---|
-| `notebooks/brain_decoding.ipynb` | fMRI decoding of object categories (Haxby) with an MLP |
-| `notebooks/encoding.ipynb` | fMRI encoding of visual stimuli (Miyawaki) with ridge regression |
-| `notebooks/audio.ipynb` | Environmental sound classification (ESC-50) with a CNN |
+| `extras/brain_decoding.ipynb` | fMRI decoding of object categories (Haxby) with an MLP |
+| `extras/encoding.ipynb` | fMRI encoding of visual stimuli (Miyawaki) with ridge regression |
+| `extras/audio.ipynb` | Environmental sound classification (ESC-50) with a CNN |
