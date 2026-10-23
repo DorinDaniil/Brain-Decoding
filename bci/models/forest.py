@@ -18,8 +18,10 @@ import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
 
-from bci.models.fbstack import BANDS
 from bci.riemann import RiemannFeatures
+
+# broadband + theta, alpha/mu, low beta, high beta, low gamma
+BANDS = ((4, 40), (4, 8), (8, 13), (13, 20), (20, 30), (30, 40))
 
 
 @dataclass

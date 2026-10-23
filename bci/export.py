@@ -2,10 +2,10 @@
 
 The platform runs one self-contained ``submission.py`` (no own modules), so a
 model is exported as plain numpy arrays in ``model.pkl`` and read back by
-``submission/submission.py``. Supported: logreg, fbstack, forest.
+``submission/submission.py``. Supported: logreg, forest.
 
-    save_submission(model, "submissions/fbstack", ch_names)  # folder + .zip
-    packaged = load_submission("submissions/fbstack", ch_names)
+    save_submission(model, "submissions/forest", ch_names)  # folder + .zip
+    packaged = load_submission("submissions/forest", ch_names)
 """
 
 import importlib.util
@@ -37,20 +37,14 @@ def _expert(features, clf, channels=None):
 
 
 def model_spec(model, ch_names):
-    """Plain-array description of a trained logreg / fbstack / forest model."""
+    """Plain-array description of a trained logreg / forest model (a list of experts)."""
     if hasattr(model, "trees"):  # forest
         experts = [_expert(t.features, t.clf, t.channels) for t in model.trees]
-        combine, weights = "mean", None
-    elif hasattr(model, "weights"):  # fbstack
-        experts = [_expert(f, e) for f, e in zip(model.features.bands, model.experts)]
-        combine, weights = "geometric", np.asarray(model.weights)
-    elif hasattr(model, "clf"):  # logreg
+    elif hasattr(model, "clf"):  # logreg: a forest of one tree
         experts = [_expert(model.features, model.clf)]
-        combine, weights = "geometric", np.ones(1)
     else:
         raise NotImplementedError(f"export of {type(model).__name__} is not supported")
-    return {"experts": experts, "combine": combine, "weights": weights,
-            "ch_names": [str(c) for c in ch_names], "sfreq": SFREQ}
+    return {"experts": experts, "ch_names": [str(c) for c in ch_names], "sfreq": SFREQ}
 
 
 def save_submission(model, folder, ch_names):

@@ -102,32 +102,6 @@ class RiemannFeatures:
         return np.array(x), np.array(fp)
 
 
-class FilterBankFeatures:
-    """RiemannFeatures for several bands at once: x and fp get a band axis, (B, 861)."""
-
-    def __init__(self, bands, prior_weight=5):
-        self.bands = [RiemannFeatures(band, prior_weight) for band in bands]
-
-    def covariances(self, X):
-        """(N, C, T) -> (N, B, C, C)"""
-        return np.stack([f.covariances(X) for f in self.bands], axis=1)
-
-    def fit_transform(self, windows):
-        x, fp = zip(*[f.fit_transform(windows) for f in self.bands])
-        return np.stack(x, axis=1), np.stack(fp, axis=1)
-
-    def transform(self, windows):
-        x, fp = zip(*[f.transform(windows) for f in self.bands])
-        return np.stack(x, axis=1), np.stack(fp, axis=1)
-
-    def new_session(self):
-        return [f.new_session() for f in self.bands]
-
-    def step(self, session, cov):
-        x, fp = zip(*[f.step(s, c) for f, s, c in zip(self.bands, session, cov)])
-        return np.stack(x), np.stack(fp)
-
-
 class StreamingDecoder:
     """Track 2 contract: ``reset_state()`` + ``predict(X)`` for X of shape (1, C, T).
 

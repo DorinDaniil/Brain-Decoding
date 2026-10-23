@@ -18,16 +18,14 @@ bci/
   models/
     logreg.py      Riemann + LogReg
     gated.py       Riemann + manifold gate (subject embedding mixed over nearest subjects)
-    fbstack.py     filter-bank ensemble: one Riemannian expert per band, weighted geometric mean
     forest.py      Riemannian random forest: random band + channel subset + subject bootstrap per tree
   export.py        trained model -> submissions/<name>.zip, and loading it back as the platform does
 submission/
-  submission.py    self-contained inference file that goes into the zip (logreg, fbstack, forest)
+  submission.py    self-contained inference file that goes into the zip (logreg, forest)
 notebooks/
   bci_data.ipynb   what the data looks like
   logreg.ipynb     one notebook per model: cross-validation + official test vs baselines
   gated.ipynb
-  fbstack.ipynb
   forest.ipynb
   submit.ipynb     train on all public data, export the zip, check it
 ```

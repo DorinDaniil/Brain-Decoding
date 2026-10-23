@@ -2,9 +2,8 @@
 
 ``model.pkl`` holds plain numpy arrays: a list of experts, each with a band, a
 channel subset, its session-recentering prior and a linear softmax head on
-tangent-space features. Experts are combined by a weighted geometric mean
-(``combine="geometric"``) or by averaging probabilities (``combine="mean"``).
-Covers the logreg, fbstack and forest models.
+tangent-space features. The prediction averages the experts' probabilities.
+Covers the logreg (one expert) and forest (one expert per tree) models.
 """
 
 import pickle
@@ -30,7 +29,7 @@ class RiemannModel:
     """``reset_state()`` + ``predict(X)``; X of shape (B, C, T), windows in recording order."""
 
     def __init__(self, spec, channel_index):
-        self.experts, self.combine, self.weights = spec["experts"], spec["combine"], spec["weights"]
+        self.experts = spec["experts"]
         self.channel_index = channel_index  # input channels -> training order
         bands = {tuple(e["band"]) for e in self.experts}
         self.sos = {b: butter(4, b, btype="bandpass", fs=spec["sfreq"], output="sos") for b in bands}
@@ -48,10 +47,7 @@ class RiemannModel:
         for i in range(len(X)):
             log_p = np.stack([self._expert_log_proba(e, s, covs[tuple(e["band"])][i])
                               for e, s in zip(self.experts, self.sessions)])
-            if self.combine == "geometric":
-                predictions.append(np.argmax(self.weights @ log_p))
-            else:
-                predictions.append(np.argmax(np.exp(log_p).mean(axis=0)))
+            predictions.append(np.argmax(np.exp(log_p).mean(axis=0)))
         return np.array(predictions, dtype=np.int64)
 
     @staticmethod
