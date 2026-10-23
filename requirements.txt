@@ -1,0 +1,25 @@
+# Python >= 3.12 (neuralbench 0.4.0 requires it)
+
+# Track 2 data pipeline: same versions the competition pins
+neuralset==0.4.0
+neuralfetch==0.4.0
+neuraltrain==0.4.0
+neuralbench==0.4.0
+exca==0.5.29
+nemar-py>=0.3.1
+moabb
+mne
+
+# models and notebooks
+torch
+pyriemann>=0.6
+scikit-learn
+numpy
+scipy
+pandas
+matplotlib
+jupyter
+
+# older notebooks (brain_decoding, encoding, audio)
+nilearn
+librosa
