@@ -13,19 +13,19 @@ covariances, so it only uses windows seen so far, exactly as on the platform.
 import numpy as np
 import torch
 from pyriemann.estimation import Covariances
-from pyriemann.utils.base import expm, invsqrtm, logm
-from pyriemann.utils.tangentspace import upper
 from scipy.signal import butter, sosfiltfilt
 from sklearn.preprocessing import StandardScaler
 
+try:  # pyriemann moved these to pyriemann.geometry
+    from pyriemann.geometry.base import expm, invsqrtm, logm
+except ImportError:
+    from pyriemann.utils.base import expm, invsqrtm, logm
+try:
+    from pyriemann.geometry.tangentspace import upper
+except ImportError:
+    from pyriemann.utils.tangentspace import upper
+
 from bci.data import SFREQ
-
-SOS = butter(4, [4, 40], btype="bandpass", fs=SFREQ, output="sos")
-
-
-def covariances(X):
-    """(N, C, T) -> (N, C, C), band 4-40 Hz."""
-    return Covariances("oas").transform(sosfiltfilt(SOS, np.asarray(X, np.float64), axis=-1))
 
 
 class SessionRecentering:
@@ -34,8 +34,8 @@ class SessionRecentering:
     Starts from the training mean (prior) counted as ``prior_weight`` windows.
     """
 
-    def __init__(self, log_prior, prior_weight=5):
-        self.log_prior, self.prior_weight = log_prior, prior_weight
+    def __init__(self, log_prior, prior_weight):
+        self.log_prior = log_prior
         self.log_sum, self.n = prior_weight * log_prior, prior_weight
 
     def __call__(self, cov):
@@ -52,18 +52,38 @@ class RiemannFeatures:
 
     ``x`` is standardized per feature. ``fp`` is divided by one global number,
     so distances between fingerprints stay log-Euclidean distances.
+
+    Parameters
+    ----------
+    band : (low, high) band-pass in Hz before the covariance.
+    prior_weight : how many windows the training mean counts for at the start
+        of a session (larger = the reference adapts more slowly).
     """
 
-    def fit_transform(self, windows):
-        covs = covariances(windows.X)
+    def __init__(self, band=(4, 40), prior_weight=5):
+        self.sos = butter(4, band, btype="bandpass", fs=SFREQ, output="sos")
+        self.prior_weight = prior_weight
+
+    def covariances(self, X):
+        """(N, C, T) -> (N, C, C)"""
+        X = sosfiltfilt(self.sos, np.asarray(X, np.float64), axis=-1)
+        return Covariances("oas").transform(X)
+
+    def fit_transform(self, windows, covs=None):
+        """``covs``: precomputed covariances of ``windows`` (else computed here)."""
+        covs = self.covariances(windows.X) if covs is None else covs
         self.log_prior = np.mean([logm(c) for c in covs], axis=0)
         self.x_scaler, self.fp_scale = None, 1.0
         x, fp = self._session_features(windows, covs)
         self.x_scaler, self.fp_scale = StandardScaler().fit(x), fp.std()
         return self.x_scaler.transform(x), fp / self.fp_scale
 
+    def transform(self, windows, covs=None):
+        covs = self.covariances(windows.X) if covs is None else covs
+        return self._session_features(windows, covs)
+
     def new_session(self):
-        return SessionRecentering(self.log_prior)
+        return SessionRecentering(self.log_prior, self.prior_weight)
 
     def step(self, session, cov):
         """Scaled (x, fp) of one window of a session."""
@@ -72,9 +92,6 @@ class RiemannFeatures:
             x = self.x_scaler.transform(x[None])[0]
         return x, fp / self.fp_scale
 
-    def transform(self, windows):
-        return self._session_features(windows, covariances(windows.X))
-
     def _session_features(self, windows, covs):
         x, fp = [None] * len(windows), [None] * len(windows)
         for idx in windows.streams():
@@ -82,6 +99,32 @@ class RiemannFeatures:
             for i in idx:
                 x[i], fp[i] = self.step(session, covs[i])
         return np.array(x), np.array(fp)
+
+
+class FilterBankFeatures:
+    """RiemannFeatures for several bands at once: x and fp get a band axis, (B, 861)."""
+
+    def __init__(self, bands, prior_weight=5):
+        self.bands = [RiemannFeatures(band, prior_weight) for band in bands]
+
+    def covariances(self, X):
+        """(N, C, T) -> (N, B, C, C)"""
+        return np.stack([f.covariances(X) for f in self.bands], axis=1)
+
+    def fit_transform(self, windows):
+        x, fp = zip(*[f.fit_transform(windows) for f in self.bands])
+        return np.stack(x, axis=1), np.stack(fp, axis=1)
+
+    def transform(self, windows):
+        x, fp = zip(*[f.transform(windows) for f in self.bands])
+        return np.stack(x, axis=1), np.stack(fp, axis=1)
+
+    def new_session(self):
+        return [f.new_session() for f in self.bands]
+
+    def step(self, session, cov):
+        x, fp = zip(*[f.step(s, c) for f, s, c in zip(self.bands, session, cov)])
+        return np.stack(x), np.stack(fp)
 
 
 class StreamingDecoder:
@@ -100,5 +143,5 @@ class StreamingDecoder:
     def predict(self, X):
         if isinstance(X, torch.Tensor):
             X = X.cpu().numpy()
-        x, fp = self.features.step(self.session, covariances(X)[0])
+        x, fp = self.features.step(self.session, self.features.covariances(X)[0])
         return np.array([self.classify(x, fp)])

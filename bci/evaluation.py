@@ -91,6 +91,16 @@ def cross_validate(fit, folds):
     return pd.DataFrame(rows).set_index("fold")
 
 
+def cross_validation_summary(fit, windows):
+    """session_mean of ``fit`` on both protocols, run on ``windows`` (train + val)."""
+    loso = cross_validate(fit, leave_one_subject_out(windows))["session_mean"]
+    later = cross_validate(fit, later_sessions(windows))["session_mean"]
+    return pd.DataFrame({
+        "new subjects (LOSO)": [loso.mean(), loso.std()],
+        "later sessions": [later.mean(), np.nan],
+    }, index=["session_mean", "std over subjects"]).round(3)
+
+
 def compare_with_baselines(results):
     """Table of our models (dict name -> score dict) next to the published ones."""
     rows = [{"model": k, "session_mean": v, "cell_mean": np.nan} for k, v in BASELINES.items()]

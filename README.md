@@ -8,20 +8,29 @@ Notebooks on decoding (and encoding) brain signals, plus a starting point for
 Classify 4 s EEG windows (41 channels, 120 Hz) into one of three mental commands:
 motor imagery, mental subtraction, word generation. Test subjects are never seen in training.
 
-```bash
-pip install -r requirements.txt     # Python >= 3.12
-python -m bci.data --data-dir data  # download PROTEUS (~1.5 GB), write data/proteus_{train,val,test}.npz
+Setup: see `SETUP.txt` (Python 3.12, then `python -m bci.data --data-dir data`).
+
+```
+bci/
+  data.py          windows via the official neuralbench pipeline (same preprocessing and split as the baselines)
+  evaluation.py    platform-style scoring + cross-validation (new subjects, later sessions)
+  riemann.py       shared features: covariances, causal session recentering, session fingerprint
+  models/
+    logreg.py      Riemann + LogReg
+    gated.py       Riemann + manifold gate (subject embedding mixed over nearest subjects)
+    fbstack.py     filter-bank ensemble: one Riemannian expert per band, weighted geometric mean
+    forest.py      Riemannian random forest: random band + channel subset + subject bootstrap per tree
+notebooks/
+  bci_data.ipynb   what the data looks like
+  logreg.ipynb     one notebook per model: cross-validation + official test vs baselines
+  gated.ipynb
+  fbstack.ipynb
+  forest.ipynb
 ```
 
-| File | What it does |
-|---|---|
-| `bci/data.py` | Builds the windows with the official neuralbench pipeline (same preprocessing and subject split as the published baselines) |
-| `bci/evaluation.py` | Scores a model the way the platform does (one window at a time, a fresh model copy per session); leave-one-subject-out and later-sessions cross-validation |
-| `bci/riemann.py` | Riemannian features: covariances, causal session recentering, session fingerprint on the manifold |
-| `notebooks/bci_data.ipynb` | What the data looks like: sessions, interfaces, classes, spectra, subject shift |
-| `notebooks/bci_riemann.ipynb` | Riemannian model whose learnable subject embedding is gated by the nearest training subjects on the manifold |
-
-Published baselines (`session_mean`, chance = 0.333): EEGNet 0.326, CTNet 0.350, REVE 0.360.
+New hypothesis: copy a file in `bci/models/` and its notebook, change the model, compare the
+cross-validation tables. Use the official test only to compare with the published baselines
+(`session_mean`, chance = 0.333): EEGNet 0.326, CTNet 0.350, REVE 0.360.
 
 ## Extras
 
