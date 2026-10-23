@@ -1,74 +1,17 @@
-Установка окружения для Track 2 (Ubuntu 22.04, под root, без conda)
-=====================================================================
-
-Системный python3 остаётся 3.10. Python 3.12 ставится рядом и используется
-только внутри окружения .venv проекта.
-
-Все команды выполнять из папки репозитория Brain-Decoding.
-
-
-1. Поставить Python 3.12 рядом с системным (PPA deadsnakes)
-------------------------------------------------------------
-
+# Python 3.12
 apt update
 apt install -y software-properties-common
 add-apt-repository -y ppa:deadsnakes/ppa
 apt install -y python3.12 python3.12-venv
 
-Проверка (должно быть 3.12.x):
-python3.12 --version
-
-
-2. Создать окружение проекта на Python 3.12
--------------------------------------------
-
-rm -rf .venv
+# окружение
 python3.12 -m venv .venv
 source .venv/bin/activate
-
-Проверка (внутри окружения должно быть 3.12.x):
-python --version
-
-Окружение нужно активировать в каждой новой сессии терминала:
-source .venv/bin/activate
-
-
-3. Поставить зависимости
-------------------------
-
-git pull
 pip install -U pip
 pip install -r requirements.txt
 
-Проверка (в конце печатает, видна ли видеокарта; False не страшно):
-python -c "import neuralbench, pyriemann, torch; print(torch.cuda.is_available())"
+# ядро для Jupyter (потом в ноутбуке: Kernel -> Change kernel -> Brain-Decoding (3.12))
+python -m ipykernel install --user --name brain-decoding --display-name "Brain-Decoding (3.12)"
 
-
-4. Скачать и подготовить данные PROTEUS (~1.5 ГБ)
--------------------------------------------------
-
+# данные
 python -m bci.data --data-dir data
-
-Появятся файлы data/proteus_train.npz, data/proteus_val.npz, data/proteus_test.npz.
-
-
-5. Запустить ноутбуки
----------------------
-
-jupyter notebook --no-browser --port 8888
-
-На своём компьютере пробросить порт (user@host заменить на свои):
-ssh -L 8888:localhost:8888 user@host
-
-Открыть в браузере ссылку с токеном, которую напечатал jupyter.
-Ноутбуки: notebooks/bci_data.ipynb, notebooks/bci_riemann.ipynb
-
-
-Если что-то пошло не так
-------------------------
-
-- "sudo: command not found": под root sudo не нужен, команды apt запускать без него.
-- add-apt-repository не может достучаться до Launchpad: прислать вывод,
-  поставим Python 3.12 готовой сборкой (python-build-standalone) без apt.
-- Ошибка "Requires-Python >=3.12" при pip install: окружение создано не на 3.12.
-  Повторить шаг 2 и проверить python --version.
