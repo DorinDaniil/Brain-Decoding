@@ -16,9 +16,10 @@ python -m bci.data --data-dir data  # download PROTEUS (~1.5 GB), write data/pro
 | File | What it does |
 |---|---|
 | `bci/data.py` | Builds the windows with the official neuralbench pipeline (same preprocessing and subject split as the published baselines) |
-| `bci/evaluation.py` | Scores a model the way the platform does: one window at a time, a fresh model copy per session, balanced accuracy per cell |
+| `bci/evaluation.py` | Scores a model the way the platform does (one window at a time, a fresh model copy per session); leave-one-subject-out and later-sessions cross-validation |
+| `bci/riemann.py` | Riemannian features: covariances, causal session recentering, session fingerprint on the manifold |
 | `notebooks/bci_data.ipynb` | What the data looks like: sessions, interfaces, classes, spectra, subject shift |
-| `notebooks/bci_riemann.ipynb` | Riemannian model: causal session recentering + tangent space + learnable subject embedding (FiLM) |
+| `notebooks/bci_riemann.ipynb` | Riemannian model whose learnable subject embedding is gated by the nearest training subjects on the manifold |
 
 Published baselines (`session_mean`, chance = 0.333): EEGNet 0.326, CTNet 0.350, REVE 0.360.
 

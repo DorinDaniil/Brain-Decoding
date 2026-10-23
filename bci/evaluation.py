@@ -68,6 +68,29 @@ def evaluate(model, windows):
     return score(windows, predict_streams(model, windows))
 
 
+def leave_one_subject_out(windows):
+    """Folds (name, train, test): each person in turn is the new, unseen subject."""
+    for s in sorted(set(windows.subject)):
+        yield s, windows.select(windows.subject != s), windows.select(windows.subject == s)
+
+
+def later_sessions(windows, n_test=1):
+    """One fold: the last ``n_test`` sessions of every person are the test,
+    their earlier sessions are in train (the known-subject half of the sealed test)."""
+    is_test = np.zeros(len(windows), bool)
+    for s in set(windows.subject):
+        sessions = sorted(set(windows.session[windows.subject == s]), key=lambda v: (len(v), v))
+        if len(sessions) > n_test:
+            is_test |= (windows.subject == s) & np.isin(windows.session, sessions[-n_test:])
+    yield "later sessions", windows.select(~is_test), windows.select(is_test)
+
+
+def cross_validate(fit, folds):
+    """``fit(train) -> model``; one row of Track 2 scores per fold."""
+    rows = [{"fold": name, **evaluate(fit(train), test)} for name, train, test in folds]
+    return pd.DataFrame(rows).set_index("fold")
+
+
 def compare_with_baselines(results):
     """Table of our models (dict name -> score dict) next to the published ones."""
     rows = [{"model": k, "session_mean": v, "cell_mean": np.nan} for k, v in BASELINES.items()]

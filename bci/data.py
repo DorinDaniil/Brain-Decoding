@@ -58,6 +58,18 @@ class Windows:
     def __len__(self):
         return len(self.y)
 
+    def select(self, mask):
+        """Windows where ``mask`` is True (order kept)."""
+        fields = {k: getattr(self, k)[mask] for k in self.__dataclass_fields__ if k != "ch_names"}
+        return Windows(**fields, ch_names=self.ch_names)
+
+
+def concat(*parts):
+    """One Windows object from several (e.g. train + val)."""
+    fields = {k: np.concatenate([getattr(p, k) for p in parts])
+              for k in Windows.__dataclass_fields__ if k != "ch_names"}
+    return Windows(**fields, ch_names=parts[0].ch_names)
+
 
 def load_split(split, data_dir="data"):
     """Load ``train``, ``val`` or ``test`` windows prepared by :func:`prepare`."""
