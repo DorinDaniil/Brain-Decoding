@@ -61,6 +61,7 @@ class RiemannFeatures:
     """
 
     def __init__(self, band=(4, 40), prior_weight=5):
+        self.band = tuple(band)
         self.sos = butter(4, band, btype="bandpass", fs=SFREQ, output="sos")
         self.prior_weight = prior_weight
 

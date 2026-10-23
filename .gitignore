@@ -171,3 +171,5 @@ cython_debug/
 .pypirc
 
 data/
+# trained submissions (weights + zip)
+submissions/
