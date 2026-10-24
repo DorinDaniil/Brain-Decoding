@@ -20,6 +20,7 @@ nemar-py>=0.3.1
 pyriemann>=0.6
 matplotlib
 jupyter
+pytest
 
 # older notebooks in extras/
 nilearn

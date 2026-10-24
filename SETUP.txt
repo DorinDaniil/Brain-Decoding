@@ -4,14 +4,24 @@ apt install -y software-properties-common
 add-apt-repository -y ppa:deadsnakes/ppa
 apt install -y python3.12 python3.12-venv
 
-# окружение
+# окружение (одно на оба проекта)
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
 
+# их репозиторий соревнования рядом с нашим: официальная оценка и тесты берут код оттуда
+git clone https://github.com/neural-interfaces26/2026-competition ../2026-competition
+
 # ядро для Jupyter (потом в ноутбуке: Kernel -> Change kernel -> Brain-Decoding (3.12))
 python -m ipykernel install --user --name brain-decoding --display-name "Brain-Decoding (3.12)"
 
-# данные
-python -m bci.data --data-dir data
+# данные Track 2
+cd track2_bci && python -m bci.data --data-dir data && cd ..
+
+# данные Track 1 (нужен GPU для DINOv2)
+cd track1_image && python -m image_decoding.data --study xu2024alljoined --data-dir data && cd ..
+
+# проверка, что наши метрики совпадают с их кодом
+cd track2_bci && python -m pytest tests -q && cd ..
+cd track1_image && python -m pytest tests -q && cd ..

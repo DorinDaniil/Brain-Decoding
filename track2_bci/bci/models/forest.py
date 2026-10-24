@@ -67,7 +67,7 @@ def _sub(cov, channels):
     return cov[..., channels, :][..., channels]
 
 
-def fit(train, n_trees=50, n_channels=12, C=0.01, bands=BANDS, prior_weight=5, seed=0):
+def fit(train, n_trees=50, n_channels=20, C=0.01, bands=BANDS, prior_weight=5, seed=0):
     rng = np.random.default_rng(seed)
     bank = [RiemannFeatures(band, prior_weight) for band in bands]
     covs = [f.covariances(train.X) for f in bank]  # full covariances, computed once per band

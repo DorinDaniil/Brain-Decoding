@@ -1,42 +1,17 @@
 # Brain Decoding
 
-Notebooks on decoding (and encoding) brain signals, plus a starting point for
-[Neural Interfaces 2026, Track 2: BCI decoding](https://neural-interfaces26.github.io/tracks.html).
+Two projects for the [Neural Interfaces 2026](https://neural-interfaces26.github.io/) challenge
+(NeurIPS 2026), plus older side notebooks. One environment for everything: see `SETUP.txt`.
 
-## Track 2: BCI decoding (PROTEUS)
+| Folder | Project |
+|---|---|
+| [`track1_image/`](track1_image/) | Track 1, EEG → image: CLIP encoder + flow-matching prior |
+| [`track2_bci/`](track2_bci/) | Track 2, BCI decoding: Riemannian models, Codabench packaging |
+| `extras/` | older notebooks, not part of the challenge |
 
-Classify 4 s EEG windows (41 channels, 120 Hz) into one of three mental commands:
-motor imagery, mental subtraction, word generation. Test subjects are never seen in training.
-
-Setup: see `SETUP.txt` (Python 3.12, then `python -m bci.data --data-dir data`).
-
-```
-bci/
-  data.py          windows via the official neuralbench pipeline (same preprocessing and split as the baselines)
-  evaluation.py    platform-style scoring + cross-validation (new subjects, later sessions)
-  riemann.py       shared features: covariances, causal session recentering, session fingerprint
-  models/
-    logreg.py      Riemann + LogReg
-    gated.py       Riemann + manifold gate (subject embedding mixed over nearest subjects)
-    forest.py      Riemannian random forest: random band + channel subset + subject bootstrap per tree
-  export.py        trained model -> submissions/<name>.zip, and loading it back as the platform does
-submission/
-  submission.py    self-contained inference file that goes into the zip (logreg, forest)
-notebooks/
-  bci_data.ipynb   what the data looks like
-  logreg.ipynb     one notebook per model: cross-validation + official test vs baselines
-  gated.ipynb
-  forest.ipynb
-  submit.ipynb     train on all public data, export the zip, check it
-```
-
-New hypothesis: copy a file in `bci/models/` and its notebook, change the model, compare the
-cross-validation tables. Use the official test only to compare with the published baselines
-(`session_mean`, chance = 0.333): EEGNet 0.326, CTNet 0.350, REVE 0.360.
+Each project is self-contained: run its commands from its folder; its data goes to `<project>/data/`.
 
 ## Extras
-
-Older side notebooks, not part of Track 2.
 
 | Notebook | Topic |
 |---|---|

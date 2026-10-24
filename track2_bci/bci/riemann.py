@@ -18,8 +18,10 @@ from sklearn.preprocessing import StandardScaler
 
 try:  # pyriemann moved these to pyriemann.geometry
     from pyriemann.geometry.base import expm, invsqrtm, logm
+    from pyriemann.geometry.mean import mean_riemann
 except ImportError:
     from pyriemann.utils.base import expm, invsqrtm, logm
+    from pyriemann.utils.mean import mean_riemann
 try:
     from pyriemann.geometry.tangentspace import upper
 except ImportError:
