@@ -14,13 +14,12 @@ image_decoding/
   evaluation.py    top-1 / top-5 as the platform computes them (per window and subject-aggregated)
   encoder.py       stage 1: EEG encoder with a learnable subject channel, trained with a CLIP loss
   prior.py         stage 2: flow-matching prior, a vector U-Net that refines the encoder's embedding
-  official.py      optional: the same scores computed by the competition's own objective
 notebooks/
   clip_flow.ipynb  train both stages and compare on test
 ```
 
-`image_decoding.evaluation` reproduces the competition's retrieval metrics exactly. `tests/` re-check
-it when their repo is cloned next to this one.
+`image_decoding.evaluation` reproduces the competition's retrieval metrics exactly (checked against
+their `Objective`).
 
 Studies (`--study`): `xu2024alljoined` (~5 GB, quick start), `xu2025alljoined` (same hardware as the
 sealed test), `gifford2022large` (THINGS-EEG2, ~220 GB), `grootswagers2022human`.

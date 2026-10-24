@@ -18,8 +18,3 @@ cd track2_bci && python -m bci.data --data-dir data && cd ..
 
 # данные Track 1 (нужен GPU для DINOv2)
 cd track1_image && python -m image_decoding.data --study xu2024alljoined --data-dir data && cd ..
-
-# необязательно: сверить наши метрики с кодом организаторов (без их репозитория тесты пропускаются)
-git clone https://github.com/neural-interfaces26/2026-competition ../2026-competition
-cd track2_bci && python -m pytest tests -q && cd ..
-cd track1_image && python -m pytest tests -q && cd ..

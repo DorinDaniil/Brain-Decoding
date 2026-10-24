@@ -16,7 +16,6 @@ bci/
     gated.py       Riemann + manifold gate (subject embedding mixed over nearest subjects)
     forest.py      Riemannian random forest: random band + channel subset + subject bootstrap per tree
   export.py        trained model -> submissions/<name>.zip, and loading it back as the platform does
-  official.py      optional: the same scores computed by the competition's own code
 submission/
   submission.py    self-contained inference file that goes into the zip (logreg, forest)
 notebooks/
@@ -28,7 +27,7 @@ notebooks/
 ```
 
 `bci.evaluation` reproduces the competition's scoring exactly (checked on real PROTEUS against
-their `Objective` and `benchopt`). `tests/` re-check it when their repo is cloned next to this one.
+their `Objective` and `benchopt`).
 
 New hypothesis: copy a file in `bci/models/` and its notebook, change the model, compare the
 cross-validation tables. Use the official test only to compare with the published baselines
