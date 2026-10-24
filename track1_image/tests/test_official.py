@@ -2,7 +2,8 @@
 
     cd track1_image && python -m pytest tests -q
 
-Needs the competition repo (see image_decoding/official.py).
+Optional check: needs the competition repo cloned next to this one (see
+image_decoding/official.py), otherwise the tests are skipped.
 """
 
 import numpy as np
@@ -11,7 +12,12 @@ import torch
 
 from image_decoding import data
 from image_decoding.evaluation import evaluate
-from image_decoding.official import official_scores
+from image_decoding.official import _objective, official_scores
+
+try:
+    _objective()
+except FileNotFoundError as err:
+    pytest.skip(str(err), allow_module_level=True)
 
 
 class FixedModel:

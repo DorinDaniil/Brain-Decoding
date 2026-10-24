@@ -2,7 +2,8 @@
 
     cd track2_bci && python -m pytest tests -q
 
-Needs the competition repo (see bci/official.py); the real-data tests also
+Optional check: needs the competition repo cloned next to this one (see
+bci/official.py), otherwise the tests are skipped. The real-data tests also
 need ``python -m bci.data --data-dir data`` (or $BCI_DATA_DIR).
 """
 
@@ -16,13 +17,17 @@ from bci import evaluation
 from bci.data import Windows
 from bci.official import _competition_repo, official_test_loader, official_test_scores
 
+try:
+    _competition_repo()
+except FileNotFoundError as err:
+    pytest.skip(str(err), allow_module_level=True)
+
 DATA_DIR = Path(os.environ.get("BCI_DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
 needs_data = pytest.mark.skipif(not (DATA_DIR / "proteus_test.npz").exists(), reason="no prepared data")
 
 
 @pytest.fixture(scope="module")
 def metrics():
-    _competition_repo()
     from benchmark_utils import metrics
     return metrics
 
