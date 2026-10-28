@@ -16,11 +16,8 @@ mne
 braindecode
 nemar-py>=0.3.1
 
-# ours: Riemannian models and notebooks
+# ours: notebooks and track 2
 pyriemann>=0.6
 matplotlib
 jupyter
 
-# older notebooks in extras/
-nilearn
-librosa

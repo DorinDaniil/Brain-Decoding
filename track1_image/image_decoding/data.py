@@ -10,7 +10,7 @@ Batches are ``(X, y, subject)``: X (B, C, T) float32, y (B, D) float32, subject 
 
 Usage (once; the DINOv2 pass over the stimuli wants a GPU):
 
-    python -m image_decoding.data --study xu2024alljoined --data-dir data
+    python -m image_decoding.data --study xu2025alljoined --data-dir data
 """
 
 import argparse
@@ -69,8 +69,8 @@ def _task_config(study, data_dir):
     return cfg
 
 
-def loaders(study="xu2024alljoined", data_dir="data", batch_size=256, num_workers=4):
-    """{"train", "val", "test"} DataLoaders and meta (n_chans, n_times, dim, n_subjects)."""
+def loaders(study="xu2025alljoined", data_dir="data", batch_size=256, num_workers=4):
+    """{"train", "val", "test"} DataLoaders and meta (n_chans, n_times, dim, n_subjects, ch_names)."""
     from neuralbench.data import Data
 
     data_dir = Path(data_dir).resolve()
@@ -81,10 +81,12 @@ def loaders(study="xu2024alljoined", data_dir="data", batch_size=256, num_worker
            for name, loader in splits.items()}
     X, y, _ = out["test"].dataset[0]
     n_subjects = len(set().union(*(set(l.dataset.triggers.subject) for l in splits.values())))
-    return out, {"n_chans": X.shape[0], "n_times": X.shape[1], "dim": y.shape[0], "n_subjects": n_subjects}
+    channels = splits["test"].dataset.extractors["neuro"]._channels  # name -> row
+    return out, {"n_chans": X.shape[0], "n_times": X.shape[1], "dim": y.shape[0], "n_subjects": n_subjects,
+                 "ch_names": sorted(channels, key=channels.get)}
 
 
-def prepare(study="xu2024alljoined", data_dir="data"):
+def prepare(study="xu2025alljoined", data_dir="data"):
     """Download the study and run the pipeline once (fills the caches, incl. DINOv2)."""
     import neuralset as ns
 
@@ -92,6 +94,9 @@ def prepare(study="xu2024alljoined", data_dir="data"):
     data_dir.mkdir(parents=True, exist_ok=True)
     source = dict(_task_config(study, data_dir)["study"]["source"])
     source["path"] = Path(source["path"]) / source["name"]
+    from image_decoding import nemar_retry
+
+    nemar_retry.patch()  # longer timeouts, resume, S3 copy of the manifest
     ns.Study(**source).download()
     splits, meta = loaders(study, data_dir, num_workers=0)
     print({name: len(l.dataset) for name, l in splits.items()}, meta)
@@ -127,12 +132,13 @@ def synthetic(n_subjects=4, n_train=400, n_test=50, reps=4, n_chans=32, n_times=
               "test": make(np.arange(n_train, n_train + n_test), reps)}
     out = {name: DataLoader(ds, batch_size=batch_size, shuffle=name == "train", drop_last=name == "train")
            for name, ds in splits.items()}
-    return out, {"n_chans": n_chans, "n_times": n_times, "dim": dim, "n_subjects": n_subjects}
+    return out, {"n_chans": n_chans, "n_times": n_times, "dim": dim, "n_subjects": n_subjects,
+                 "ch_names": [f"E{i}" for i in range(n_chans)]}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--study", default="xu2024alljoined", choices=sorted(STUDIES))
+    parser.add_argument("--study", default="xu2025alljoined", choices=sorted(STUDIES))
     parser.add_argument("--data-dir", default="data")
     args = parser.parse_args()
     prepare(args.study, args.data_dir)

@@ -58,7 +58,7 @@ def predict(model, loader, known_subject=False):
     pred, target, subject = [], [], []
     for X, y, s in loader:
         out = model.predict(X, s) if known_subject else model.predict(X)
-        pred.append(np.asarray(out, np.float64))
+        pred.append(torch.as_tensor(out).detach().cpu().numpy().astype(np.float64))
         target.append(y.numpy())
         subject.append(np.asarray(s))
     return np.concatenate(pred), np.concatenate(target), np.concatenate(subject)

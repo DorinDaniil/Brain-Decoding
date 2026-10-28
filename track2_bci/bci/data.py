@@ -106,6 +106,9 @@ def prepare(data_dir="data"):
 
     source = dict(cfg["study"]["source"])
     source["path"] = Path(source["path"]) / source["name"]
+    from bci import nemar_retry
+
+    nemar_retry.patch()  # longer timeouts, resume, S3 copy of the manifest
     ns.Study(**source).download()
 
     loaders = Data(**cfg).prepare()
