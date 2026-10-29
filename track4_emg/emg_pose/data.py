@@ -40,7 +40,7 @@ class Windows(Dataset):
         return len(self.subject)
 
     def __getitem__(self, i):
-        data = self.segments[i].data
+        data = self.segments[int(i)].data  # neuralset accepts only a plain int
         X = torch.as_tensor(np.asarray(data["neuro"]), dtype=torch.float32)
         y = torch.as_tensor(np.asarray(data["target"]), dtype=torch.float32)
         return X.reshape(-1, X.shape[-1]), y.reshape(-1, y.shape[-1]), int(self.subject[i])

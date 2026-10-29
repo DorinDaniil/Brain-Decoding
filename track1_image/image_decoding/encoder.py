@@ -40,7 +40,7 @@ def val_subset(loader, max_windows=20000, seed=0):
     n = len(loader.dataset)
     if n <= max_windows:
         return loader
-    idx = np.sort(np.random.default_rng(seed).choice(n, max_windows, replace=False))
+    idx = np.sort(np.random.default_rng(seed).choice(n, max_windows, replace=False)).tolist()
     return DataLoader(Subset(loader.dataset, idx), batch_size=loader.batch_size, num_workers=loader.num_workers)
 
 
