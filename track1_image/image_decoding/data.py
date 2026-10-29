@@ -79,8 +79,11 @@ class Packed:
 
 
 def load(study="xu2025alljoined", data_dir="data"):
-    """The packed study, X read into RAM."""
+    """The packed study, X read into RAM; packs it first if needed (once, about one pass over the data)."""
     folder = Path(data_dir) / "packed" / study
+    if not (folder / "meta.json").exists():  # written last: a missing file means an absent or unfinished pack
+        print(f"{folder} is not packed yet: packing it now")
+        pack(study, data_dir)
     meta = json.loads((folder / "meta.json").read_text())
     X = np.load(folder / "X.npy", mmap_mode="r")
     host = torch.empty(X.shape, dtype=torch.float16)
@@ -181,7 +184,8 @@ def pack(study="xu2025alljoined", data_dir="data", batch_size=512, num_workers=8
         print(f"no standard position for {missing}: these channels will be ignored")
     np.savez(folder / "index.npz", image=image, subject=subject, test=test, images=np.stack(images))
     (folder / "meta.json").write_text(json.dumps({"study": study, "ch_names": ch_names, "positions": positions}))
-    print(load(study, data_dir).summary())
+    print(f"packed {n} windows ({X.nbytes / 2**30:.1f} GB), {len(images)} images, "
+          f"{len(np.unique(subject))} subjects, {C} channels x {T} samples -> {folder}")
 
 
 def prepare(study="xu2025alljoined", data_dir="data"):
