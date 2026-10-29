@@ -5,3 +5,4 @@ python -m emg_pose.data --data-dir data                  # данные, оди�
 python -m emg_pose.make_submission --seeds 3 --epochs 40 # обучение + submissions/posenet.zip
 python -m emg_pose.make_submission --synthetic           # проверка кода без данных
 ```
+Ноутбук: `notebooks/train_test.ipynb`.

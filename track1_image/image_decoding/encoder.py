@@ -9,8 +9,10 @@ positives, not false negatives. tau is learned, the loss is symmetric.
 
 import copy
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset
 
 from image_decoding.evaluation import evaluate
 from image_decoding.nets import EEGEncoder, ImageDecoder
@@ -33,8 +35,18 @@ def clip_loss(e, z, log_tau):
     return (F.cross_entropy(logits, target) + F.cross_entropy(logits.T, target)) / 2
 
 
-def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="cpu", log=print, **net_kwargs):
-    """Train on ``train``, keep the epoch with the best val top-5. Returns (ImageDecoder, history)."""
+def val_subset(loader, max_windows=20000, seed=0):
+    """A fixed random subset of ``loader`` (all of it when small), to pick the epoch quickly."""
+    n = len(loader.dataset)
+    if n <= max_windows:
+        return loader
+    idx = np.sort(np.random.default_rng(seed).choice(n, max_windows, replace=False))
+    return DataLoader(Subset(loader.dataset, idx), batch_size=loader.batch_size, num_workers=loader.num_workers)
+
+
+def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="cpu", log=print,
+                  max_val_windows=20000, **net_kwargs):
+    """Train on ``train``, keep the epoch with the best top-5 on a val subset. Returns (ImageDecoder, history)."""
     mu, s, radius = target_space(loaders["train"])
     net = EEGEncoder(meta["n_chans"], meta["n_times"], meta["dim"], meta["n_subjects"], **net_kwargs)
     model = ImageDecoder(net, mu, s, radius, meta["ch_names"]).to(device)
@@ -42,7 +54,8 @@ def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="
 
     best, history = (-1.0, None), []
     n_batches = len(loaders["train"])
-    log(f"training on {device}: {n_batches} batches per epoch")
+    val = val_subset(loaders["val"], max_val_windows)
+    log(f"training on {device}: {n_batches} batches per epoch, {len(val.dataset)} val windows")
     for epoch in range(epochs):
         net.train()
         for i, (X, y, subject) in enumerate(loaders["train"]):
@@ -54,11 +67,11 @@ def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="
             if i % 200 == 0:
                 log(f"epoch {epoch} batch {i}/{n_batches} loss {loss.item():.3f}")
 
-        val = evaluate(model, loaders["val"])  # a new person: average subject channel
-        history.append({"epoch": epoch, "loss": loss.item(), **val})
-        log(f"epoch {epoch}: val top-5 {val['top5']:.2f}, top-1 {val['top1']:.2f}")
-        if val["top5"] > best[0]:
-            best = (val["top5"], copy.deepcopy(net.state_dict()))
+        scores = evaluate(model, val)  # a new person: average subject channel
+        history.append({"epoch": epoch, "loss": loss.item(), **scores})
+        log(f"epoch {epoch}: val top-5 {scores['top5']:.2f}, top-1 {scores['top1']:.2f}")
+        if scores["top5"] > best[0]:
+            best = (scores["top5"], copy.deepcopy(net.state_dict()))
 
     net.load_state_dict(best[1])
     return model, history
