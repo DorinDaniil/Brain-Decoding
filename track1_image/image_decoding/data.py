@@ -20,6 +20,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
+# DataLoader workers pass batches through shared memory; in containers /dev/shm
+# is often tiny (64 MB) and the worker dies with a bus error, taking the Jupyter
+# kernel with it. Sharing through files avoids /dev/shm.
+torch.multiprocessing.set_sharing_strategy("file_system")
+
 TASK = "image"
 
 # study -> neuralbench dataset overlay (None = the task default, THINGS-EEG2)

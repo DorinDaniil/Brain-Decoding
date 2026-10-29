@@ -33,7 +33,7 @@ def clip_loss(e, z, log_tau):
     return (F.cross_entropy(logits, target) + F.cross_entropy(logits.T, target)) / 2
 
 
-def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="cpu", **net_kwargs):
+def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="cpu", log=print, **net_kwargs):
     """Train on ``train``, keep the epoch with the best val top-5. Returns (ImageDecoder, history)."""
     mu, s, radius = target_space(loaders["train"])
     net = EEGEncoder(meta["n_chans"], meta["n_times"], meta["dim"], meta["n_subjects"], **net_kwargs)
@@ -41,17 +41,22 @@ def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
 
     best, history = (-1.0, None), []
+    n_batches = len(loaders["train"])
+    log(f"training on {device}: {n_batches} batches per epoch")
     for epoch in range(epochs):
         net.train()
-        for X, y, subject in loaders["train"]:
+        for i, (X, y, subject) in enumerate(loaders["train"]):
             z = ((y - mu) / s).to(device)
             loss = clip_loss(net(X.to(device), subject.to(device)), z, net.log_tau)
             opt.zero_grad()
             loss.backward()
             opt.step()
+            if i % 200 == 0:
+                log(f"epoch {epoch} batch {i}/{n_batches} loss {loss.item():.3f}")
 
         val = evaluate(model, loaders["val"])  # a new person: average subject channel
         history.append({"epoch": epoch, "loss": loss.item(), **val})
+        log(f"epoch {epoch}: val top-5 {val['top5']:.2f}, top-1 {val['top1']:.2f}")
         if val["top5"] > best[0]:
             best = (val["top5"], copy.deepcopy(net.state_dict()))
 
