@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
-from image_decoding.evaluation import evaluate
+from image_decoding.evaluation import evaluate, image_ids
 from image_decoding.nets import EEGEncoder, ImageDecoder
 
 
@@ -35,18 +35,31 @@ def clip_loss(e, z, log_tau):
     return (F.cross_entropy(logits, target) + F.cross_entropy(logits.T, target)) / 2
 
 
-def val_subset(loader, max_windows=20000, seed=0):
-    """A fixed random subset of ``loader`` (all of it when small), to pick the epoch quickly."""
+def val_subset(loader, n_images=300, max_scan=60000, seed=0):
+    """All val windows of ``n_images`` random images: a fixed gallery like the test one.
+
+    With every val image in the gallery (tens of thousands on Alljoined-1.6M),
+    top-5 sits near chance whatever the model, and the epoch choice is noise.
+    Chance with this gallery is 5 / n_images. Scans at most ``max_scan`` windows.
+    """
     n = len(loader.dataset)
-    if n <= max_windows:
-        return loader
-    idx = np.sort(np.random.default_rng(seed).choice(n, max_windows, replace=False)).tolist()
-    return DataLoader(Subset(loader.dataset, idx), batch_size=loader.batch_size, num_workers=loader.num_workers)
+    scan = np.sort(np.random.default_rng(seed).choice(n, min(n, max_scan), replace=False)).tolist()
+    scan_loader = DataLoader(Subset(loader.dataset, scan), batch_size=loader.batch_size,
+                             num_workers=loader.num_workers)
+    targets = torch.cat([y for _, y, _ in scan_loader]).numpy()
+    ids, _ = image_ids(targets)
+    counts = np.bincount(ids)
+    images = np.flatnonzero(counts >= 2)  # images seen at least twice: repeats to average
+    if len(images) < n_images:
+        images = np.flatnonzero(counts >= 1)
+    chosen = np.random.default_rng(seed).choice(images, min(n_images, len(images)), replace=False)
+    keep = [scan[i] for i in np.flatnonzero(np.isin(ids, chosen))]
+    return DataLoader(Subset(loader.dataset, keep), batch_size=loader.batch_size, num_workers=loader.num_workers)
 
 
 def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="cpu", log=print,
-                  max_val_windows=20000, **net_kwargs):
-    """Train on ``train``, keep the epoch with the best top-5 on a val subset. Returns (ImageDecoder, history)."""
+                  val_images=300, **net_kwargs):
+    """Train on ``train``, keep the epoch with the best top-5 on a fixed val gallery. Returns (ImageDecoder, history)."""
     mu, s, radius = target_space(loaders["train"])
     net = EEGEncoder(meta["n_chans"], meta["n_times"], meta["dim"], meta["n_subjects"], **net_kwargs)
     model = ImageDecoder(net, mu, s, radius, meta["ch_names"]).to(device)
@@ -54,8 +67,9 @@ def train_encoder(loaders, meta, epochs=30, lr=3e-4, weight_decay=1e-2, device="
 
     best, history = (-1.0, None), []
     n_batches = len(loaders["train"])
-    val = val_subset(loaders["val"], max_val_windows)
-    log(f"training on {device}: {n_batches} batches per epoch, {len(val.dataset)} val windows")
+    val = val_subset(loaders["val"], val_images)
+    log(f"training on {device}: {n_batches} batches per epoch; val: {len(val.dataset)} windows of "
+        f"{val_images} images, chance top-5 {500 / val_images:.2f}%")
     for epoch in range(epochs):
         net.train()
         for i, (X, y, subject) in enumerate(loaders["train"]):

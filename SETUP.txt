@@ -18,10 +18,13 @@ cd track2_bci && python -m bci.data --data-dir data && cd ..
 # Track 1: Alljoined-1.6M под лицензией CC BY-NC-ND, переменная ниже означает ваше согласие с ней; нужен GPU для DINOv2
 export ALLJOINED_ACCEPT_LICENCE=1
 cd track1_image && python -m image_decoding.data --study xu2025alljoined --data-dir data && cd ..
+# Track 3: ~1.2 ГБ
+cd track3_sleep && python -m sleep_onset.data --data-dir data && cd ..
 # Track 4: ~330 ГБ загрузки и ~440 ГБ кэша
 cd track4_emg && python -m emg_pose.data --data-dir data && cd ..
 
 # отправки: ZIP в <трек>/submissions/, загружать в Codabench -> My Submissions
 cd track2_bci && python -m bci.make_submission && cd ..
 cd track1_image && python -m image_decoding.make_submission --study xu2025alljoined && cd ..
+cd track3_sleep && python -m sleep_onset.make_submission && cd ..
 cd track4_emg && python -m emg_pose.make_submission --seeds 3 --epochs 40 && cd ..
