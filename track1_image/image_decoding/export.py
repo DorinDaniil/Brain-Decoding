@@ -4,7 +4,7 @@ The platform runs one self-contained ``submission.py``, so it is generated from
 ``nets.py`` (the networks) plus a small ``Solver``; the weights go to
 ``weights.pt`` as plain tensors and numbers (loadable with ``weights_only=True``).
 
-    zip_path = save_submission(model, "submissions/clip_flow")
+    zip_path = save_submission(model, "submissions/spatial_conv")
     check_zip(zip_path)
 """
 
@@ -36,8 +36,9 @@ class Solver(CompetSolver):
         state = torch.load(meta["submission_dir"] / "weights.pt", map_location="cpu", weights_only=True)
         config = state["config"]
         prior = VectorUNet(**config["prior"]) if config["prior"] is not None else None
-        model = ImageDecoder(EEGEncoder(**config["encoder"]), state["mu"], state["s"], state["radius"],
-                             config["ch_names"], prior, config["n_steps"])
+        positions = dict(zip(config["table_names"], state["table"].tolist()))
+        model = ImageDecoder([SpatialConvEncoder(**c) for c in config["encoders"]], state["mu"], state["s"],
+                             state["radius"], positions, config["ch_names"], state["scales"], prior, config["n_steps"])
         model.load_state_dict(state["model"])
         if meta.get("ch_names"):
             model.match_channels(meta["ch_names"])
@@ -55,14 +56,15 @@ def save_submission(model, folder):
     folder.mkdir(parents=True)
     (folder / "submission.py").write_text(NETS.read_text(encoding="utf-8") + SOLVER, encoding="utf-8")
     config = {
-        "encoder": model.encoder.config,
+        "encoders": [enc.config for enc in model.encoders],
         "prior": None if model.prior is None else model.prior.config,
         "n_steps": int(model.n_steps),
         "ch_names": list(model.ch_names),
+        "table_names": list(model.table_names),
     }
     state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-    torch.save({"config": config, "model": state, "mu": state["mu"], "s": state["s"],
-                "radius": state["radius"]}, folder / "weights.pt")
+    torch.save({"config": config, "model": state, **{k: state[k] for k in ("mu", "s", "radius", "scales", "table")}},
+               folder / "weights.pt")
     return Path(shutil.make_archive(str(folder), "zip", folder))
 
 
@@ -82,8 +84,11 @@ def load_submission(folder, ch_names=None, device="cpu"):
     return module.Solver().load_model(meta)
 
 
-def check_zip(zip_path, batch_size=64, n_times=120):
-    """Contract checks without data: root files, imports, (B, 1536) output, no state across batches."""
+def check_zip(zip_path, batch_size=64, sealed_windows=200_000):
+    """Contract checks without data: root files, imports, (B, 1536) output, no state across batches.
+
+    Also times the CPU forward pass against the 3600 s limit, for ``sealed_windows`` windows.
+    """
     zip_path = Path(zip_path)
     with zipfile.ZipFile(zip_path) as z:
         names = z.namelist()
@@ -99,7 +104,8 @@ def check_zip(zip_path, batch_size=64, n_times=120):
             raise ValueError(f"not available on the worker: {sorted(imported - WORKER_MODULES)}")
         with tempfile.TemporaryDirectory() as tmp:
             z.extractall(tmp)
-            train_names = torch.load(Path(tmp) / "weights.pt", weights_only=True)["config"]["ch_names"]
+            config = torch.load(Path(tmp) / "weights.pt", weights_only=True)["config"]
+            train_names, n_times = config["ch_names"], config["encoders"][0]["n_times"]
             # the evaluation montage in another order, with one extra and one missing channel
             eval_names = list(reversed(train_names[1:])) + ["EXTRA"]
             model = load_submission(Path(tmp), eval_names)
@@ -111,6 +117,9 @@ def check_zip(zip_path, batch_size=64, n_times=120):
                 raise ValueError(f"predict must return finite (B, 1536), got {tuple(out.shape)}")
             if not torch.allclose(torch.as_tensor(model.predict(X[:5])), out[:5], atol=1e-4):
                 raise ValueError("a window's prediction depends on the rest of the batch")
+    cpu_time = per_batch / batch_size * sealed_windows
     print(f"{zip_path.name}: OK  {zip_path.stat().st_size / 2**20:.1f} MB, "
-          f"{per_batch * 1000 / batch_size:.1f} ms per window on CPU, "
-          f"{len(train_names)} training channels matched by name")
+          f"{per_batch * 1000 / batch_size:.1f} ms per window on CPU (~{cpu_time / 60:.0f} min for "
+          f"{sealed_windows} windows), {len(config['encoders'])} encoders, montage matched by electrode name")
+    if cpu_time > 3000:
+        print("warning: on a CPU-only worker this may not finish within the 3600 s limit")

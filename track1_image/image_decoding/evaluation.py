@@ -1,11 +1,11 @@
 """Retrieval metrics exactly as Track 1 computes them, in bounded memory.
 
 Each prediction is ranked by cosine similarity against the candidate gallery,
-the unique target embeddings of the evaluated split. Tied scores share their
+the unique target embeddings of the evaluated windows. Tied scores share their
 average rank. Two variants:
 - ``top5``: every window is a query (warm-up);
 - ``top5_subject_agg``: predictions of repeated presentations of one image are
-  first averaged within each subject (sealed evaluation).
+  first summed within each subject (sealed evaluation).
 
 Scores are computed in chunks of queries, so memory does not grow with
 windows x gallery (hundreds of thousands x thousands on Alljoined-1.6M).
@@ -49,38 +49,39 @@ def _hits(queries, gallery, true_idx, ks=(1, 5), chunk=2048):
     return hits
 
 
+def retrieval_ids(pred, image, subject, images):
+    """Top-1 / top-5 (in %) of predictions (N, D) of windows showing ``image`` (N,) ids into ``images``."""
+    shown, idx = np.unique(np.asarray(image), return_inverse=True)
+    idx = idx.reshape(-1)
+    gallery = _normalize(np.asarray(images[shown], np.float64)).T
+    top1, top5 = 100 * _hits(pred, gallery, idx) / len(pred)
+
+    # sum the predictions of each (subject, image)
+    subject = np.unique(np.asarray(subject), return_inverse=True)[1].reshape(-1)
+    keys, inverse = np.unique(subject * len(shown) + idx, return_inverse=True)
+    pred_agg = np.zeros((len(keys), pred.shape[1]))
+    np.add.at(pred_agg, inverse.reshape(-1), pred)
+    agg1, agg5 = 100 * _hits(pred_agg, gallery, keys % len(shown)) / len(keys)
+
+    return {"top1": float(top1), "top5": float(top5), "top1_subject_agg": float(agg1),
+            "top5_subject_agg": float(agg5), "n_candidates": len(shown)}
+
+
 def retrieval(pred, target, subject):
     """Top-1 / top-5 (in %) of predictions (N, D) for targets (N, D) of subjects (N,)."""
     idx, first = image_ids(target)
-    gallery = _normalize(np.asarray(target[first], np.float64)).T
-    top1, top5 = 100 * _hits(pred, gallery, idx) / len(pred)
-
-    # average the predictions of each (subject, image)
-    subject = np.unique(np.asarray(subject), return_inverse=True)[1].reshape(-1)
-    keys, inverse = np.unique(subject * (idx.max() + 1) + idx, return_inverse=True)
-    pred_agg = np.zeros((len(keys), pred.shape[1]))
-    np.add.at(pred_agg, inverse.reshape(-1), pred)
-    agg1, agg5 = 100 * _hits(pred_agg, gallery, keys % (idx.max() + 1)) / len(keys)
-
-    return {"top1": float(top1), "top5": float(top5), "top1_subject_agg": float(agg1),
-            "top5_subject_agg": float(agg5), "n_candidates": len(first)}
+    return retrieval_ids(pred, idx, subject, np.asarray(target)[first])
 
 
 @torch.no_grad()
-def predict(model, loader, known_subject=False):
-    """``model.predict(X) -> (B, D)`` over a loader -> (pred, target, subject) as numpy float32.
-
-    ``known_subject``: also pass the subject ids (models with subject channels);
-    the platform passes only X.
-    """
-    pred, target, subject = [], [], []
-    for X, y, s in loader:
-        out = model.predict(X, s) if known_subject else model.predict(X)
-        pred.append(torch.as_tensor(out).detach().float().cpu().numpy())
-        target.append(y.numpy())
-        subject.append(np.asarray(s))
-    return np.concatenate(pred), np.concatenate(target), np.concatenate(subject)
+def predict(model, data, index, batch_size=4096):
+    """``model.predict`` over the windows ``index`` of packed data -> (N, D) float32 numpy."""
+    device = model.mu.device
+    out = [torch.as_tensor(model.predict(data.windows(index[i:i + batch_size], device))).float().cpu()
+           for i in range(0, len(index), batch_size)]
+    return torch.cat(out).numpy()
 
 
-def evaluate(model, loader, known_subject=False):
-    return retrieval(*predict(model, loader, known_subject))
+def evaluate(model, data, index):
+    """Leaderboard scores of ``model`` on the windows ``index`` (the gallery: their images)."""
+    return retrieval_ids(predict(model, data, index), data.image[index], data.subject[index], data.images)

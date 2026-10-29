@@ -2,6 +2,12 @@
 
 This file is copied verbatim into the Codabench ``submission.py`` by
 ``image_decoding.export``, so it must not import anything from this project.
+
+The encoder never sees channel indices, only electrode positions: channels are
+merged into virtual channels by attention over Fourier features of their 3D
+positions, so the same weights read any montage (32-channel Emotiv, 63-channel
+THINGS-EEG2) and missing channels are simply left out. Nothing depends on the
+subject: the sealed test is on new people.
 """
 
 import math
@@ -10,46 +16,97 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+HEAD_RADIUS = 0.1  # metres: positions are divided by it, so the scalp sits in [-1, 1]
 
-class EEGEncoder(nn.Module):
-    """Subject channel -> temporal conv -> spatial conv over all channels -> projector.
 
-    Every training subject has a learnable time series appended to its EEG as one
-    more channel. A new person gets the average of the learned channels; during
-    training a window's own channel is replaced by that average with probability
-    ``subject_dropout``, so the encoder also works without knowing who it is.
+def montage(names, table_names, table):
+    """Positions (C, 3) of ``names`` from a name -> xyz table, and which of them were found (C,)."""
+    row = {n.upper(): i for i, n in enumerate(table_names)}
+    index = torch.tensor([row.get(str(n).upper(), -1) for n in names])
+    pos = table[index.clamp(min=0)] / HEAD_RADIUS
+    return pos * (index >= 0)[:, None], index >= 0
+
+
+def fourier_features(pos, n_freqs):
+    """(C, 3) positions in [-1, 1] -> (C, 2 n_freqs^3) cosines and sines on an integer frequency grid."""
+    grid = torch.arange(n_freqs, device=pos.device, dtype=pos.dtype)
+    k = torch.stack(torch.meshgrid(grid, grid, grid, indexing="ij"), -1).reshape(-1, 3)
+    angles = math.pi * pos @ k.T
+    return torch.cat([angles.cos(), angles.sin()], dim=-1)
+
+
+class ChannelMerger(nn.Module):
+    """Real channels -> virtual channels by attention over channel positions (Defossez et al. 2023).
+
+    Virtual channel v mixes the input with softmax_c(q_v . phi(pos_c)) over the
+    channels present. During training a random scalp region is dropped from
+    each window, so no single electrode is relied on.
     """
 
-    def __init__(self, n_chans, n_times, dim, n_subjects, k=40, dropout=0.5, subject_dropout=0.2):
+    def __init__(self, n_virtual=128, n_freqs=4, drop_prob=0.5, drop_radius=0.35):
         super().__init__()
-        self.config = dict(n_chans=n_chans, n_times=n_times, dim=dim, n_subjects=n_subjects, k=k,
-                           dropout=dropout, subject_dropout=subject_dropout)
-        self.subject_channel = nn.Parameter(0.1 * torch.randn(n_subjects, n_times))
-        self.subject_dropout = subject_dropout
-        self.convs = nn.Sequential(
-            nn.Conv2d(1, k, (1, 13)), nn.AvgPool2d((1, 25), (1, 5)), nn.BatchNorm2d(k), nn.ELU(),
-            nn.Conv2d(k, k, (n_chans + 1, 1)), nn.BatchNorm2d(k), nn.ELU(), nn.Dropout(dropout),
-            nn.Conv2d(k, k, 1), nn.Flatten(),
-        )
-        n_flat = self.convs(torch.zeros(2, 1, n_chans + 1, n_times)).shape[1]
-        self.project = nn.Linear(n_flat, dim)
-        self.residual = nn.Sequential(nn.GELU(), nn.Linear(dim, dim), nn.Dropout(dropout))
-        self.norm = nn.LayerNorm(dim)
-        self.log_tau = nn.Parameter(torch.tensor(math.log(1 / 0.07)))
+        self.n_freqs, self.drop_prob, self.drop_radius = n_freqs, drop_prob, drop_radius
+        self.queries = nn.Parameter(torch.randn(n_virtual, 2 * n_freqs ** 3) / n_freqs ** 1.5)
 
-    def forward(self, X, subject=None):
-        """X (B, C, T); subject (B,) training-subject ids, or None for a new person."""
-        average = self.subject_channel.mean(0).expand(len(X), -1)
-        if subject is None:
-            extra = average
-        else:
-            extra = self.subject_channel[subject]
-            if self.training:
-                drop = torch.rand(len(X), 1, device=X.device) < self.subject_dropout
-                extra = torch.where(drop, average, extra)
-        X = torch.cat([X, extra[:, None]], dim=1)  # (B, C + 1, T)
-        h = self.project(self.convs(X[:, None]))
-        return self.norm(h + self.residual(h))
+    def forward(self, X, pos, valid):
+        """X (B, C, T), pos (C, 3), valid (C,) bool -> (B, n_virtual, T)."""
+        mask = valid[None].expand(len(X), -1)
+        if self.training and self.drop_prob > 0:
+            center = pos[torch.multinomial(valid.float().expand(len(X), -1), 1)[:, 0]]  # a present channel
+            near = torch.cdist(center[:, None], pos[None].expand(len(X), -1, -1))[:, 0] < self.drop_radius
+            dropped = mask & ~(near & (torch.rand(len(X), 1, device=X.device) < self.drop_prob))
+            mask = torch.where(dropped.any(1, keepdim=True), dropped, mask)
+        scores = self.queries @ fourier_features(pos, self.n_freqs).T  # (V, C)
+        weights = scores[None].masked_fill(~mask[:, None], float("-inf")).softmax(-1)
+        return torch.einsum("bvc,bct->bvt", weights, X)
+
+
+class ConvBlock(nn.Module):
+    """Residual dilated temporal convolution: x + Dropout(GELU(BN(conv(x))))."""
+
+    def __init__(self, width, dilation, dropout):
+        super().__init__()
+        self.conv = nn.Conv1d(width, width, 3, padding=dilation, dilation=dilation)
+        self.norm = nn.BatchNorm1d(width)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return x + self.drop(F.gelu(self.norm(self.conv(x))))
+
+
+class SpatialConvEncoder(nn.Module):
+    """EEG window -> u, the prediction p = mu + s u of the DINOv2 embedding.
+
+    Channel merger -> 1x1 conv + time embedding -> dilated residual convolutions
+    -> attention pooling over time (several heads, each its own latency
+    profile) -> MLP. p lives in the leaderboard's geometry: it is ranked by
+    cosine against the raw DINOv2 embeddings, and its norm weighs it when the
+    predictions of repeated presentations are summed.
+    """
+
+    def __init__(self, n_times, dim, n_virtual=128, width=320, dilations=(1, 2, 4, 8, 16), n_heads=4,
+                 hidden=2048, dropout=0.3, n_freqs=4, drop_prob=0.5, drop_radius=0.35):
+        super().__init__()
+        self.config = dict(n_times=n_times, dim=dim, n_virtual=n_virtual, width=width, dilations=list(dilations),
+                           n_heads=n_heads, hidden=hidden, dropout=dropout, n_freqs=n_freqs,
+                           drop_prob=drop_prob, drop_radius=drop_radius)
+        self.merger = ChannelMerger(n_virtual, n_freqs, drop_prob, drop_radius)
+        self.inp = nn.Sequential(nn.Conv1d(n_virtual, width, 1), nn.BatchNorm1d(width), nn.GELU())
+        self.time = nn.Parameter(torch.zeros(1, width, n_times))
+        self.blocks = nn.Sequential(*[ConvBlock(width, d, dropout) for d in dilations])
+        self.attend = nn.Conv1d(width, n_heads, 1)
+        self.head = nn.Sequential(nn.LayerNorm(n_heads * width), nn.Linear(n_heads * width, hidden), nn.GELU(),
+                                  nn.Dropout(dropout), nn.Linear(hidden, dim))
+        nn.init.zeros_(self.head[-1].weight)  # start at p = mu
+        nn.init.zeros_(self.head[-1].bias)
+        self.log_scale = nn.Parameter(torch.tensor(math.log(50.0)))  # inverse temperature of the loss
+
+    def forward(self, X, pos, valid):
+        h = self.inp(self.merger(X, pos, valid))
+        time = self.time if h.shape[-1] == self.time.shape[-1] else F.interpolate(self.time, h.shape[-1])
+        h = self.blocks(h + time)
+        attention = self.attend(h).softmax(-1)  # (B, heads, T)
+        return self.head(torch.einsum("bht,bwt->bhw", attention, h).flatten(1))
 
 
 class Block(nn.Module):
@@ -98,54 +155,53 @@ class VectorUNet(nn.Module):
 
 
 class ImageDecoder(nn.Module):
-    """EEG window -> DINOv2-giant embedding: encoder, optional flow refinement, back to target space.
+    """EEG window -> DINOv2-giant embedding: an ensemble of encoders, optionally refined by a flow prior.
 
-    Targets live in z = (y - mu) / s; predictions are put on the sphere of
-    typical targets (radius) before going back to y. Channels are matched by
-    name to the training montage; missing ones are zero. Stateless: every
-    window is predicted on its own.
+    Each member predicts p_m = mu + s u_m; the answer is the mean of p_m / scale_m
+    (scale_m: the member's typical norm). Channels are matched by name to a table
+    of electrode positions; unknown names are left out. Stateless: every window
+    is predicted on its own.
     """
 
-    def __init__(self, encoder, mu, s, radius, ch_names, prior=None, n_steps=10):
+    def __init__(self, encoders, mu, s, radius, positions, ch_names, scales=None, prior=None, n_steps=0):
         super().__init__()
-        self.encoder, self.prior, self.n_steps = encoder, prior, n_steps
+        self.encoders = nn.ModuleList(encoders)
+        self.prior, self.n_steps = prior, n_steps
         self.register_buffer("mu", torch.as_tensor(mu, dtype=torch.float32))
         self.register_buffer("s", torch.as_tensor(s, dtype=torch.float32))
         self.register_buffer("radius", torch.as_tensor(radius, dtype=torch.float32))
+        self.register_buffer("scales", torch.ones(len(encoders)) if scales is None
+                             else torch.as_tensor(scales, dtype=torch.float32))
+        self.table_names = list(positions)
+        self.register_buffer("table", torch.tensor([positions[n] for n in self.table_names], dtype=torch.float32))
         self.ch_names = [str(c) for c in ch_names]
-        self.channel_index = None  # input channel feeding each training channel, -1 = missing
+        self.match_channels(self.ch_names)
 
     def match_channels(self, input_names):
-        """Map the evaluation montage onto the training one by channel name (case-insensitive)."""
-        position = {str(n).upper(): i for i, n in enumerate(input_names)}
-        self.channel_index = torch.tensor([position.get(n.upper(), -1) for n in self.ch_names])
-        return int((self.channel_index >= 0).sum())
+        """Read inputs in the order of ``input_names``; returns how many have a known position."""
+        pos, valid = montage(input_names, self.table_names, self.table.cpu())
+        if not valid.any():
+            raise ValueError(f"no known electrode among {list(input_names)[:10]}")
+        self.register_buffer("pos", pos.to(self.mu.device), persistent=False)
+        self.register_buffer("valid", valid.to(self.mu.device), persistent=False)
+        return int(valid.sum())
 
-    def _select(self, X):
-        if self.channel_index is None:
-            return X
-        index = self.channel_index.to(X.device)
-        out = X[:, index.clamp(min=0)]
-        return out * (index >= 0)[None, :, None]
-
-    def on_sphere(self, e):
-        return self.radius * F.normalize(e, dim=-1)
+    def ensemble(self, X):
+        p = [(self.mu + self.s * enc(X, self.pos, self.valid)) / scale for enc, scale in zip(self.encoders, self.scales)]
+        return torch.stack(p).mean(0)
 
     @torch.no_grad()
-    def refine(self, e):
-        """Euler steps of the flow prior from the encoder output (in z-space)."""
-        cond = self.on_sphere(e)
+    def refine(self, p):
+        """Euler steps of the flow prior from p put on the sphere of typical targets (in z = (y - mu) / s)."""
+        cond = (self.radius * F.normalize(p, dim=-1) - self.mu) / self.s
         x = cond.clone()
         for i in range(self.n_steps):
             t = torch.full((len(x),), i / self.n_steps, device=x.device)
             x = x + self.prior(x, t, cond) / self.n_steps
-        return x
+        return self.mu + self.s * x
 
     @torch.no_grad()
-    def predict(self, X, subject=None):
+    def predict(self, X):
         self.eval()
-        X = self._select(torch.as_tensor(X, dtype=torch.float32).to(self.mu.device))
-        z = self.encoder(X, subject)
-        if self.prior is not None and self.n_steps > 0:
-            z = self.refine(z)
-        return self.mu + self.s * self.on_sphere(z)
+        p = self.ensemble(torch.as_tensor(X, dtype=torch.float32).to(self.mu.device))
+        return self.refine(p) if self.prior is not None and self.n_steps > 0 else p
