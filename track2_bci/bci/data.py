@@ -137,6 +137,38 @@ def prepare(data_dir="data"):
         print(f"{split}: {len(order)} windows, {len(set(rows['subject']))} subjects")
 
 
+def synthetic(n_subjects=5, multi_session=2, n_sessions=2, runs=4, per_run=12, n_chans=41, n_times=480, seed=0):
+    """Tiny fake PROTEUS in the same format, to check the code without downloading.
+
+    Each class drives the power of one band in its own channel group (mu
+    suppression, frontal theta, temporal 45 Hz); every participant mixes the
+    sources through its own head, and every session rescales the channels.
+    The first ``multi_session`` participants have ``n_sessions`` sessions.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(n_times) / SFREQ
+    groups = [rng.choice(n_chans, 6, replace=False) for _ in range(3)]
+    freqs = (10.0, 6.0, 45.0)
+    rows = {k: [] for k in Windows.__dataclass_fields__ if k != "ch_names"}
+    for s in range(n_subjects):
+        head = np.eye(n_chans) + 0.3 * rng.normal(size=(n_chans, n_chans)) / np.sqrt(n_chans)
+        for session in range(n_sessions if s < multi_session else 1):
+            gain = np.exp(0.2 * rng.normal(size=(n_chans, 1)))
+            for run in range(1, runs + 1):
+                labels = rng.permutation(np.arange(per_run) % 3)
+                for j, y in enumerate(labels):
+                    source = rng.normal(size=(n_chans, n_times))
+                    phase = rng.uniform(0, 2 * np.pi, size=(6, 1))
+                    source[groups[y]] += 1.5 * np.sin(2 * np.pi * freqs[y] * t + phase)
+                    rows["X"].append((gain * (head @ source) * 10).astype(np.float32))
+                    rows["y"].append(int(y)); rows["subject"].append(f"sub-{s}")
+                    rows["session"].append(f"ses-{session + 1}")
+                    rows["context"].append("Graz" if run % 2 else "BrainHero")
+                    rows["run"].append(run); rows["onset"].append(5.0 * j)
+    rows = {k: np.stack(v) for k, v in rows.items()}
+    return Windows(**rows, ch_names=np.array([f"E{i}" for i in range(n_chans)]))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-dir", default="data")
