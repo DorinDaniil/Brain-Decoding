@@ -1,6 +1,6 @@
 """Train a variant on all public data and build the Codabench ZIP in one command.
 
-    python -m bci.make_submission                       # the best variant: all, 3 deep seeds
+    python -m bci.make_submission                       # the best variant: all+transduction, 3 deep seeds
     python -m bci.make_submission --variant "all but deep"
     python -m bci.make_submission --model forest              # the older single models: forest, logreg
     python -m bci.make_submission --synthetic --n-trees 6          # code check, no download
@@ -26,7 +26,7 @@ from bci.models import forest, logreg
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--variant", default="all", choices=list(VARIANTS))
+    parser.add_argument("--variant", default="all+transduction", choices=list(VARIANTS))
     parser.add_argument("--model", choices=["forest", "logreg"], default=None,
                         help="an older single model instead of a variant")
     parser.add_argument("--prior-weight", type=int, default=5)
@@ -42,6 +42,8 @@ def main():
     parser.add_argument("--deep-epochs", type=int, default=100)
     parser.add_argument("--deep-weight", type=float, default=0.3)
     parser.add_argument("--deep-pool", default="log", choices=["log", "lin"])
+    parser.add_argument("--deep-crop", type=int, default=None, help="train on random crops of this many samples")
+    parser.add_argument("--deep-jitter", action="store_true", help="channel gain jitter and dropout")
     parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--prior-windows", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
@@ -64,11 +66,12 @@ def main():
         switches = VARIANTS[args.variant]
         parts = fit_components(full, [switches], n_trees=args.n_trees, n_subject_trees=args.n_subject_trees,
                                n_channels=args.n_channels, C=args.C, prior_weight=args.prior_weight,
-                               deep_seeds=tuple(range(args.deep_seeds)), deep_epochs=args.deep_epochs, seed=args.seed)
+                               deep_seeds=tuple(range(args.deep_seeds)), deep_epochs=args.deep_epochs, deep_crop=args.deep_crop,
+                               deep_jitter=args.deep_jitter, seed=args.seed)
         _, model = assemble(parts, switches, full.ch_names, deep_weight=args.deep_weight, alpha=args.alpha,
                             prior_windows=args.prior_windows, deep_pool=args.deep_pool)
 
-    name = args.name or label.replace("+", "").replace(" ", "_")
+    name = args.name or label.replace("+", "_").replace(" ", "_").strip("_")
     folder = Path(args.out_dir) / name
     zip_path = save_submission(model, folder, full.ch_names)
 

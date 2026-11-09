@@ -20,6 +20,13 @@ One window at a time, per session (``reset_state()`` starts a session):
 4. Optional balance: the trials of a run are balanced over the classes, so the
    probabilities are divided by the session's running mean prediction (to the
    power ``alpha``), which undoes a drift towards one class.
+5. Optional transduction: the classes of a session are balanced and form
+   clusters in the session's own feature space even when a cross-subject
+   model misplaces them. Full-channel filter-bank tangent vectors of the
+   session so far are projected on their whitened principal axes; a
+   class-balanced (Sinkhorn) assignment, started from the ensemble's
+   probabilities, and an LDA fitted on it are iterated; the current window
+   gets its row of the final assignment.
 """
 
 import json
@@ -28,15 +35,14 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+from scipy.linalg import eigh
 from scipy.signal import butter, sosfiltfilt
-from scipy.special import logsumexp
-from sklearn.covariance import oas
 
 
 def _matrix_function(C, f):
-    """f(C) for a symmetric matrix, through its eigendecomposition (as pyriemann)."""
+    """f(C) for a symmetric matrix or a stack of them, through the eigendecomposition (as pyriemann)."""
     eigvals, eigvecs = np.linalg.eigh(C)
-    return (eigvecs * f(eigvals)) @ eigvecs.T
+    return (eigvecs * f(eigvals)[..., None, :]) @ np.swapaxes(eigvecs, -1, -2)
 
 
 def logm(C):
@@ -51,12 +57,37 @@ def invsqrtm(C):
     return _matrix_function(C, lambda v: 1.0 / np.sqrt(v))
 
 
+_UPPER = {}
+
+
 def upper(C):
-    """Upper triangle as a vector, off-diagonal entries times sqrt(2) (as pyriemann)."""
+    """Upper triangle as a vector (of each matrix of a stack), off-diagonal entries times sqrt(2) (as pyriemann)."""
     n = C.shape[-1]
-    idx = np.triu_indices(n)
-    coeffs = (np.sqrt(2) * np.triu(np.ones((n, n)), 1) + np.eye(n))[idx]
-    return coeffs * C[idx]
+    if n not in _UPPER:
+        idx = np.triu_indices(n)
+        _UPPER[n] = idx, (np.sqrt(2) * np.triu(np.ones((n, n)), 1) + np.eye(n))[idx]
+    idx, coeffs = _UPPER[n]
+    return coeffs * C[..., idx[0], idx[1]]
+
+
+def log_softmax(z):
+    m = z.max(-1, keepdims=True)
+    return z - m - np.log(np.exp(z - m).sum(-1, keepdims=True))
+
+
+def oas_covariance(x):
+    """OAS covariance of one window x (C, T), the formula of scikit-learn 1.9 ``oas`` (samples = time points)."""
+    x = x - x.mean(1, keepdims=True)
+    n_samples, n_features = x.shape[1], x.shape[0]
+    S = x @ x.T / n_samples
+    alpha = np.mean(S ** 2)
+    mu = np.trace(S) / n_features
+    num = alpha + mu ** 2
+    den = (n_samples + 1) * (alpha - mu ** 2 / n_features)
+    shrinkage = 1.0 if den == 0 else min(num / den, 1.0)
+    S = (1.0 - shrinkage) * S
+    S.flat[:: n_features + 1] += shrinkage * mu
+    return S
 
 
 def bandpass(band, sfreq):
@@ -66,15 +97,51 @@ def bandpass(band, sfreq):
 def covariances(X, sos):
     """(N, C, T) -> (N, C, C): band-pass, then the OAS estimator of pyriemann's Covariances("oas")."""
     X = sosfiltfilt(sos, np.asarray(X, np.float64), axis=-1)
-    return np.stack([oas(x.T)[0] for x in X])
+    return np.stack([oas_covariance(x) for x in X])
 
 
 def tangent_step(state, cov, log_cov=None):
     """Tangent vector of ``cov`` at the session's running log-Euclidean mean; updates ``state`` = [log_sum, n]."""
     state[0] = state[0] + (logm(cov) if log_cov is None else log_cov)
-    state[1] += 1
-    W = invsqrtm(expm(state[0] / state[1]))
+    state[1] = state[1] + 1
+    n = np.asarray(state[1], np.float64)[..., None, None]
+    W = expm(-state[0] / (2 * n))  # = invsqrtm(expm(mean)), one eigendecomposition
     return upper(logm(W @ cov @ W))
+
+
+def balanced_assignment(logits, n_iter=30):
+    """Rows of exp(logits) rescaled (Sinkhorn) so that every class receives the same total mass."""
+    K = np.exp(logits - logits.max(1, keepdims=True))
+    u, v = np.ones(len(K)), np.ones(K.shape[1])
+    mass = np.full(K.shape[1], len(K) / K.shape[1])
+    for _ in range(n_iter):
+        u = 1 / (K @ v)
+        v = mass / (K.T @ u)
+    q = u[:, None] * K * v[None]
+    return q / q.sum(1, keepdims=True)
+
+
+def self_label(gram, log_prior, beta=1.0, k=20, iters=5, shrink=0.5):
+    """Balanced self-labelling of a session: (n, n) Gram matrix of its features, (n, K) prior log-probabilities.
+
+    Whitened principal coordinates come from the centred Gram matrix (eigenvectors times sqrt(n)), so the
+    feature dimension never enters. Alternates an LDA on the soft labels with a balanced assignment.
+    """
+    n = len(gram)
+    k = max(1, min(k, n // 3))
+    centred = gram - gram.mean(0)[None] - gram.mean(1)[:, None] + gram.mean()
+    _, vecs = eigh(centred, subset_by_index=[n - k, n - 1])  # only the k leading axes
+    P = vecs[:, ::-1] * np.sqrt(n)
+    q = balanced_assignment(log_prior)
+    for _ in range(iters):
+        mu = (q.T @ P) / q.sum(0)[:, None]
+        R = P - q @ mu
+        S = R.T @ R / n
+        S = (1 - shrink) * S + shrink * np.trace(S) / k * np.eye(k)
+        Si = np.linalg.inv(S)
+        loglik = P @ Si @ mu.T - 0.5 * np.einsum("cd,de,ce->c", mu, Si, mu)[None]
+        q = balanced_assignment(log_prior + beta * loglik)
+    return q
 
 
 def align_step(state, x):
@@ -149,6 +216,7 @@ class StreamModel:
         self.sos = [bandpass(b, spec["sfreq"]) for b in spec["bands"]]
         self.experts = spec["experts"]
         self.groups = np.array([e["group"] for e in self.experts])
+        self.blocks = self._stack_experts(spec)
         self.nets = []
         if spec.get("deep"):
             deep = spec["deep"]
@@ -159,15 +227,38 @@ class StreamModel:
                 self.nets.append(net.eval())
         self.reset_state()
 
+    @staticmethod
+    def _stack_experts(spec):
+        """Experts with the same number of channels, stacked so that one window is one batched computation."""
+        n_chans = len(spec["ch_names"])
+        channels = [np.arange(n_chans) if e["channels"] is None else np.asarray(e["channels"]) for e in spec["experts"]]
+        blocks = []
+        for size in sorted({len(c) for c in channels}):
+            idx = [i for i, c in enumerate(channels) if len(c) == size]
+            ex = [spec["experts"][i] for i in idx]
+            blocks.append({
+                "idx": np.array(idx), "band": np.array([e["band"] for e in ex]),
+                "channels": np.stack([channels[i] for i in idx]),
+                "prior_weight": np.array([e["prior_weight"] for e in ex], np.float64),
+                "log_prior": np.stack([np.asarray(e["log_prior"]) for e in ex]),
+                "x_mean": np.stack([e["x_mean"] for e in ex]), "x_scale": np.stack([e["x_scale"] for e in ex]),
+                "coef": np.stack([e["coef"] for e in ex]), "intercept": np.stack([e["intercept"] for e in ex])})
+        return blocks
+
     def reset_state(self):
-        self.expert_states = [[e["prior_weight"] * np.asarray(e["log_prior"]), e["prior_weight"]]
-                              for e in self.experts]
+        self.block_states = [[b["prior_weight"][:, None, None] * b["log_prior"], b["prior_weight"].copy()]
+                             for b in self.blocks]
         if self.nets:
             deep = self.spec["deep"]
             self.align_state = [deep["prior_weight"] * np.asarray(deep["cov_prior"]), deep["prior_weight"]]
         self.route_state = [0.0, 0]
         self.balance_state = [0.0, 0]
         self.known, self.subject = 0.0, -1  # routing outcome after the last window
+        t = self.spec.get("transduction")
+        if t:
+            self.trans_states = [[t["prior_weight"] * np.asarray(lp), t["prior_weight"]] for lp in t["log_priors"]]
+            self.trans_feats, self.trans_logp = [], []
+            self.gram = np.zeros((0, 0))
 
     def predict(self, X):
         X = np.asarray(X.detach().cpu() if hasattr(X, "detach") else X, np.float64)
@@ -184,7 +275,15 @@ class StreamModel:
                 covs[band] = covariances(x[None], self.sos[band])[0]
             return covs[band]
 
-        probas = np.stack([np.exp(self._expert(e, s, cov(e["band"]))) for e, s in zip(self.experts, self.expert_states)])
+        probas = np.empty((len(self.experts), self.spec.get("n_classes", 3)))
+        for block, state in zip(self.blocks, self.block_states):
+            bands = np.unique(block["band"])
+            full = np.stack([cov(b) for b in bands])
+            ch = block["channels"]
+            subs = full[np.searchsorted(bands, block["band"])[:, None, None], ch[:, :, None], ch[:, None, :]]
+            feats = (tangent_step(state, subs) - block["x_mean"]) / block["x_scale"]
+            z = np.einsum("ekd,ed->ek", block["coef"], feats) + block["intercept"]
+            probas[block["idx"]] = np.exp(log_softmax(z))
         p = probas[self.groups < 0].mean(0)
         if self.nets:
             w, deep = self.spec["deep"]["weight"], self._deep(x)
@@ -198,22 +297,39 @@ class StreamModel:
             known, weights = self._route(cov(self.spec["router"]["band"]))
             subject = np.stack([probas[self.groups == k].mean(0) for k in range(len(weights))])
             p = (1 - known) * p + known * weights @ subject
+        prior = p
         if self.spec.get("balance"):
             p = self._balance(p)
+        if self.spec.get("transduction"):
+            p = self._transduce(prior, p, cov)
         return p
 
-    def _expert(self, e, state, cov):
-        channels = e["channels"]
-        if channels is not None:
-            cov = cov[np.ix_(channels, channels)]
-        z = e["coef"] @ ((tangent_step(state, cov) - e["x_mean"]) / e["x_scale"]) + e["intercept"]
-        return z - logsumexp(z)
+    def _transduce(self, prior, p, cov):
+        t = self.spec["transduction"]
+        z = np.concatenate([tangent_step(s, cov(b)) for s, b in zip(self.trans_states, t["bands"])])
+        cross = np.array([f @ z for f in self.trans_feats] + [z @ z])
+        n = len(cross)
+        gram = np.empty((n, n))
+        gram[:-1, :-1], gram[-1], gram[:, -1] = self.gram, cross, cross
+        self.gram = gram
+        self.trans_feats.append(z)
+        self.trans_logp.append(np.log(prior + 1e-9))
+        if n < t["warm"]:
+            return p
+        q = self_label(gram, np.array(self.trans_logp), t["beta"], t["k"], t["iters"], t["shrink"])
+        return q[-1]
 
     @torch.no_grad()
     def _deep(self, x):
         xa = align_step(self.align_state, sosfiltfilt(self.deep_sos, x, axis=-1))
-        xa = torch.as_tensor(xa[None], dtype=torch.float32)
-        return np.mean([torch.softmax(net(xa), -1)[0].numpy() for net in self.nets], axis=0)
+        crop = self.spec["deep"].get("crop")
+        if crop:  # evenly spaced crops, averaged
+            starts = np.linspace(0, xa.shape[-1] - crop, self.spec["deep"]["n_crops"]).astype(int)
+            xa = np.stack([xa[:, s:s + crop] for s in starts])
+        else:
+            xa = xa[None]
+        xa = torch.as_tensor(xa, dtype=torch.float32)
+        return np.mean([torch.softmax(net(xa), -1).mean(0).numpy() for net in self.nets], axis=0)
 
     def _route(self, cov):
         """(confidence that the session is a known participant, weights over the training participants)."""
@@ -228,7 +344,7 @@ class StreamModel:
         if s[1] >= r["min_windows"]:
             known = 1 / (1 + math.exp(-(r["ratio"] - first / second) / r["width"]))
         logits = -(d / first - 1) / r["sharpness"]
-        weights = np.exp(logits - logsumexp(logits))
+        weights = np.exp(log_softmax(logits))
         self.known, self.subject = known, int(np.argmin(d))
         return known, weights
 

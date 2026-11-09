@@ -107,11 +107,12 @@ def load_submission(folder, ch_names=None):
     return module.Solver().load_model(meta)
 
 
-def check_zip(zip_path, n_windows=20, n_classes=3, sealed_windows=25_000, seed=0):
+def check_zip(zip_path, n_windows=220, n_classes=3, sealed_windows=25_000, seed=0):
     """Check a submission ZIP against the Codabench contract, without any data.
 
     Files at the root, imports available on the worker, ``Solver().load_model``
-    works, ``deepcopy`` + ``reset_state`` + one-window ``predict`` return one
+    works, ``deepcopy`` + ``reset_state`` + one-window ``predict`` over a session-long
+    stream (``n_windows``, so session-growing costs are counted) return one
     class index per window. Prints the size and the time per window, against
     the 60-minute limit for about ``sealed_windows`` sealed windows.
     """
@@ -147,7 +148,7 @@ def check_zip(zip_path, n_windows=20, n_classes=3, sealed_windows=25_000, seed=0
             per_window = (time.perf_counter() - start) / n_windows
 
     spec = model.spec
-    parts = [f"{len(spec['experts'])} experts"] + [k for k in ("router", "deep", "balance") if spec.get(k)]
+    parts = [f"{len(spec['experts'])} experts"] + [k for k in ("router", "deep", "balance", "transduction") if spec.get(k)]
     total = per_window * sealed_windows / 60
     print(f"{zip_path.name}: OK  {zip_path.stat().st_size / 2**20:.1f} MB, {', '.join(parts)}, "
           f"{per_window * 1000:.0f} ms per window on CPU (~{total:.0f} min for {sealed_windows} windows, limit 60)")

@@ -47,7 +47,8 @@ def run_fold(protocol, name, train, test, variants, args):
     log = (lambda *a: None) if args.jobs != 1 else print
     parts = fit_components(train, [VARIANTS[v] for v in variants], n_trees=args.n_trees,
                            n_subject_trees=args.n_subject_trees, n_channels=args.n_channels, C=args.C,
-                           deep_seeds=tuple(range(args.deep_seeds)), deep_epochs=args.deep_epochs, log=log)
+                           deep_seeds=tuple(range(args.deep_seeds)), deep_epochs=args.deep_epochs, deep_crop=args.deep_crop,
+                               deep_jitter=args.deep_jitter, log=log)
     subjects = sorted(set(train.subject))
     rows = []
     for variant in variants:
@@ -76,6 +77,8 @@ def main():
     parser.add_argument("--deep-epochs", type=int, default=100)
     parser.add_argument("--deep-weight", type=float, default=0.3)
     parser.add_argument("--deep-pool", default="log", choices=["log", "lin"])
+    parser.add_argument("--deep-crop", type=int, default=None, help="train on random crops of this many samples")
+    parser.add_argument("--deep-jitter", action="store_true", help="channel gain jitter and dropout")
     parser.add_argument("--alpha", type=float, default=1.0, help="strength of the balance correction")
     parser.add_argument("--prior-windows", type=int, default=10, help="uniform windows the balance starts from")
     parser.add_argument("--jobs", type=int, default=1, help="folds in parallel")

@@ -11,6 +11,8 @@ Components, each optional in a variant:
   threshold calibrated on them (``subjects`` need it);
 - ``deep``: ShallowConvNet seeds on causally aligned windows;
 - ``balance``: no training, two numbers.
+- ``transduction``: balanced self-labelling within the session on full-channel
+  filter-bank tangent vectors; training only gives their recentering priors.
 
     parts = fit_components(train, list(VARIANTS.values()))   # shared parts, trained once
     spec, model = assemble(parts, VARIANTS["all"], train.ch_names)
@@ -32,6 +34,7 @@ EXTRA_BANDS = ((0.5, 4), (40, 58), (1, 58))
 ROUTER_BAND = (1, 40)
 BANDS = BASE_BANDS + EXTRA_BANDS + (ROUTER_BAND,)  # the spec's band bank; experts refer to it by index
 DEEP_BAND = (1, 58)
+TRANSDUCTION_BANDS = ((4, 8), (8, 13), (13, 20), (20, 30), (4, 40))
 
 # variant name -> switches (missing = off / default)
 VARIANTS = {
@@ -42,6 +45,7 @@ VARIANTS = {
     "+deep": {"deep": True},
     "all but deep": {"bands": "extended", "routing": True, "balance": True},
     "all": {"bands": "extended", "routing": True, "deep": True, "balance": True},
+    "all+transduction": {"bands": "extended", "routing": True, "deep": True, "balance": True, "transduction": True},
 }
 
 
@@ -147,8 +151,13 @@ def aligned_windows(windows, Xf, cov_prior, prior_weight):
 
 
 def fit_deep(windows, seeds=(0,), epochs=100, lr=1e-3, weight_decay=1e-2, batch_size=64, prior_weight=5,
-             device=None, log=print):
-    """ShallowConvNet seeds on aligned windows -> the spec's ``deep`` entry (its mixing weight set later)."""
+             crop=None, n_crops=5, jitter=False, device=None, log=print):
+    """ShallowConvNet seeds on aligned windows -> the spec's ``deep`` entry (its mixing weight set later).
+
+    ``crop``: train on random sub-windows of that many samples (one start per batch) and average
+    ``n_crops`` evenly spaced crops at inference. ``jitter``: per-channel gain jitter (10 %) and
+    channel dropout (10 %) during training.
+    """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     Xf = sosfiltfilt(bandpass(DEEP_BAND, SFREQ), np.asarray(windows.X, np.float64), axis=-1)
     cov_prior = np.mean([x @ x.T / x.shape[-1] for x in Xf], axis=0)
@@ -158,24 +167,40 @@ def fit_deep(windows, seeds=(0,), epochs=100, lr=1e-3, weight_decay=1e-2, batch_
     nets = []
     for seed in seeds:
         torch.manual_seed(seed)
-        net = ShallowNet(X.shape[1], X.shape[2]).to(device)
+        net = ShallowNet(X.shape[1], crop or X.shape[2]).to(device)
         opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
         schedule = torch.optim.lr_scheduler.CosineAnnealingLR(opt, epochs)
         for epoch in range(epochs):
             net.train()
             for idx in torch.randperm(len(y)).split(batch_size):
-                loss = F.cross_entropy(net(X[idx].to(device)), y[idx].to(device), weight=class_weight.to(device))
+                xb = X[idx]
+                if crop:
+                    start = int(torch.randint(0, X.shape[2] - crop + 1, (1,)))
+                    xb = xb[:, :, start:start + crop]
+                if jitter:
+                    xb = xb * torch.exp(0.1 * torch.randn(len(xb), xb.shape[1], 1))
+                    xb = xb * (torch.rand(len(xb), xb.shape[1], 1) > 0.1).float()
+                loss = F.cross_entropy(net(xb.to(device)), y[idx].to(device), weight=class_weight.to(device))
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
             schedule.step()
         log(f"deep seed {seed}: final training loss {loss.item():.3f}")
         nets.append({"config": net.config, "state": {k: v.detach().cpu().numpy() for k, v in net.state_dict().items()}})
-    return {"band": DEEP_BAND, "prior_weight": prior_weight, "cov_prior": cov_prior, "nets": nets}
+    return {"band": DEEP_BAND, "prior_weight": prior_weight, "cov_prior": cov_prior, "nets": nets,
+            "crop": crop, "n_crops": n_crops}
+
+
+def fit_transduction(covs, prior_weight=5, beta=1.0, k=20, iters=5, shrink=0.5, warm=20):
+    """The spec's ``transduction`` entry: full-channel recentering priors of its bands, and its settings."""
+    bands = [BANDS.index(b) for b in TRANSDUCTION_BANDS]
+    log_priors = [np.mean([logm(c) for c in covs[b]], axis=0) for b in bands]
+    return {"bands": bands, "log_priors": log_priors, "prior_weight": prior_weight, "beta": beta, "k": k,
+            "iters": iters, "shrink": shrink, "warm": warm}
 
 
 def fit_components(train, switches, n_trees=50, n_subject_trees=10, n_channels=20, C=0.01, prior_weight=5,
-                   deep_seeds=(0,), deep_epochs=100, seed=0, log=print):
+                   deep_seeds=(0,), deep_epochs=100, deep_crop=None, deep_jitter=False, seed=0, log=print):
     """Everything the variants in ``switches`` (a list of switch dicts) need, trained once on ``train``."""
     covs = Covariances(train)
     banks = {"base": list(range(len(BASE_BANDS))), "extended": list(range(len(BASE_BANDS) + len(EXTRA_BANDS)))}
@@ -193,16 +218,21 @@ def fit_components(train, switches, n_trees=50, n_subject_trees=10, n_channels=2
                                       prior_weight, group=k, bootstrap_subjects=False, seed=seed + 1 + k)
             parts[f"subjects/{name}"] = experts
         parts["router"] = fit_router(train, covs, subjects)
+    if any(s.get("transduction") for s in switches):
+        parts["transduction"] = fit_transduction(covs, prior_weight)
     if any(s.get("deep") for s in switches):
-        parts["deep"] = fit_deep(train, deep_seeds, deep_epochs, prior_weight=prior_weight, log=log)
+        parts["deep"] = fit_deep(train, deep_seeds, deep_epochs, prior_weight=prior_weight, crop=deep_crop,
+                                 jitter=deep_jitter, log=log)
     return parts
 
 
-def assemble(parts, switches, ch_names, deep_weight=0.3, alpha=1.0, prior_windows=10, deep_pool="log"):
+def assemble(parts, switches, ch_names, deep_weight=0.3, alpha=1.0, prior_windows=10, deep_pool="log",
+             transduction=None):
     """A StreamModel spec for ``switches`` from trained ``parts``, and the model itself."""
     bands = switches.get("bands", "base")
     spec = {"sfreq": SFREQ, "ch_names": [str(c) for c in ch_names], "bands": [list(b) for b in BANDS],
-            "experts": list(parts[f"forest/{bands}"]), "router": None, "deep": None, "balance": None}
+            "experts": list(parts[f"forest/{bands}"]), "router": None, "deep": None, "balance": None,
+            "transduction": None}
     if switches.get("routing"):
         spec["experts"] += parts[f"subjects/{bands}"]
         spec["router"] = parts["router"]
@@ -210,4 +240,6 @@ def assemble(parts, switches, ch_names, deep_weight=0.3, alpha=1.0, prior_window
         spec["deep"] = dict(parts["deep"], weight=deep_weight, pool=deep_pool)
     if switches.get("balance"):
         spec["balance"] = {"alpha": alpha, "prior_windows": prior_windows}
+    if switches.get("transduction"):
+        spec["transduction"] = dict(parts["transduction"], **(transduction or {}))
     return spec, StreamModel(spec)
